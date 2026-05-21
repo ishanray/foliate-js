@@ -794,6 +794,10 @@ export class Paginator extends HTMLElement {
         const delta = this.#vertical ? dy : dx
         const element = this.#container
         const { scrollProp } = this
+        if (this.scrolled) {
+            element[scrollProp] += delta
+            return
+        }
         const [offset, a, b] = this.#scrollBounds
         const rtl = this.#rtl
         const min = rtl ? offset - b : offset - a
