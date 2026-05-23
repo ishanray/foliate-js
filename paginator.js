@@ -449,6 +449,7 @@ export class Paginator extends HTMLElement {
     #touchState
     #touchScrolled
     #lastVisibleRange
+    #boundaryScrollPromise
     constructor() {
         super()
         this.#root.innerHTML = `<style>
@@ -512,6 +513,9 @@ export class Paginator extends HTMLElement {
             grid-column: 1 / -1;
             grid-row: 1 / -1;
             overflow: auto;
+            touch-action: pan-y pinch-zoom;
+            overscroll-behavior: contain;
+            -webkit-overflow-scrolling: touch;
         }
         #header {
             grid-column: 3 / 4;
@@ -790,12 +794,50 @@ export class Paginator extends HTMLElement {
     get pages() {
         return Math.round(this.viewSize / this.size)
     }
+    #continueBoundaryScroll(dir, overflow) {
+        if (this.#boundaryScrollPromise) return
+        this.#boundaryScrollPromise = (async () => {
+            await (dir < 0 ? this.prev() : this.next())
+            if (overflow) {
+                const element = this.#container
+                const { scrollProp } = this
+                const max = Math.max(0, this.viewSize - this.size)
+                element[scrollProp] = Math.max(0, Math.min(max, this.start + overflow))
+            }
+        })().finally(() => {
+            this.#boundaryScrollPromise = null
+        })
+    }
     scrollBy(dx, dy) {
-        const delta = this.#vertical ? dy : dx
+        const delta = this.scrolled
+            ? this.#vertical ? dx : dy
+            : this.#vertical ? dy : dx
         const element = this.#container
         const { scrollProp } = this
         if (this.scrolled) {
-            element[scrollProp] += delta
+            const max = Math.max(0, this.viewSize - this.size)
+            if (delta < 0 && this.start <= 1) {
+                element[scrollProp] = 0
+                this.#continueBoundaryScroll(-1, delta)
+                return
+            }
+            if (delta > 0 && max - this.start <= 1) {
+                element[scrollProp] = max
+                this.#continueBoundaryScroll(1, delta)
+                return
+            }
+            const target = this.start + delta
+            if (target < 0) {
+                element[scrollProp] = 0
+                this.#continueBoundaryScroll(-1, target)
+                return
+            }
+            if (target > max) {
+                element[scrollProp] = max
+                this.#continueBoundaryScroll(1, target - max)
+                return
+            }
+            element[scrollProp] = target
             return
         }
         const [offset, a, b] = this.#scrollBounds
