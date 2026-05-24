@@ -1,4 +1,5 @@
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
+const SCROLLED_BOUNDARY_OVERSCROLL = 48
 
 const debounce = (f, wait, immediate) => {
     let timeout
@@ -450,6 +451,7 @@ export class Paginator extends HTMLElement {
     #touchScrolled
     #lastVisibleRange
     #boundaryScrollPromise
+    #lastFlow
     constructor() {
         super()
         this.#root.innerHTML = `<style>
@@ -513,7 +515,7 @@ export class Paginator extends HTMLElement {
             grid-column: 1 / -1;
             grid-row: 1 / -1;
             overflow: auto;
-            touch-action: pan-y pinch-zoom;
+            touch-action: pan-x pan-y pinch-zoom;
             overscroll-behavior: contain;
             -webkit-overflow-scrolling: touch;
         }
@@ -572,10 +574,12 @@ export class Paginator extends HTMLElement {
         this.addEventListener('touchstart', this.#onTouchStart.bind(this), opts)
         this.addEventListener('touchmove', this.#onTouchMove.bind(this), opts)
         this.addEventListener('touchend', this.#onTouchEnd.bind(this))
+        this.addEventListener('touchcancel', this.#onTouchCancel.bind(this))
         this.addEventListener('load', ({ detail: { doc } }) => {
             doc.addEventListener('touchstart', this.#onTouchStart.bind(this), opts)
             doc.addEventListener('touchmove', this.#onTouchMove.bind(this), opts)
             doc.addEventListener('touchend', this.#onTouchEnd.bind(this))
+            doc.addEventListener('touchcancel', this.#onTouchCancel.bind(this))
         })
 
         this.addEventListener('relocate', ({ detail }) => {
@@ -757,10 +761,19 @@ export class Paginator extends HTMLElement {
     }
     render() {
         if (!this.#view) return
+        const flow = this.getAttribute('flow')
+        if (flow === 'scrolled' && this.#lastFlow === 'scrolled') {
+            try {
+                this.#anchor = this.#getVisibleRange()
+            } catch (e) {
+                console.warn(e)
+            }
+        }
         this.#view.render(this.#beforeRender({
             vertical: this.#vertical,
             rtl: this.#rtl,
         }))
+        this.#lastFlow = flow
         this.#scrollToAnchor(this.#anchor)
     }
     get scrolled() {
@@ -794,8 +807,14 @@ export class Paginator extends HTMLElement {
     get pages() {
         return Math.round(this.viewSize / this.size)
     }
+    #getScrollDelta(dx, dy) {
+        return this.scrolled
+            ? this.#vertical ? dx : dy
+            : this.#vertical ? dy : dx
+    }
     #continueBoundaryScroll(dir, overflow) {
-        if (this.#boundaryScrollPromise) return
+        if (this.#boundaryScrollPromise || this.#locked) return
+        if (this.#adjacentIndex(dir) == null) return
         this.#boundaryScrollPromise = (async () => {
             await (dir < 0 ? this.prev() : this.next())
             if (overflow) {
@@ -809,9 +828,7 @@ export class Paginator extends HTMLElement {
         })
     }
     scrollBy(dx, dy) {
-        const delta = this.scrolled
-            ? this.#vertical ? dx : dy
-            : this.#vertical ? dy : dx
+        const delta = this.#getScrollDelta(dx, dy)
         const element = this.#container
         const { scrollProp } = this
         if (this.scrolled) {
@@ -840,6 +857,7 @@ export class Paginator extends HTMLElement {
             element[scrollProp] = target
             return
         }
+        if (!this.#scrollBounds) return
         const [offset, a, b] = this.#scrollBounds
         const rtl = this.#rtl
         const min = rtl ? offset - b : offset - a
@@ -848,6 +866,7 @@ export class Paginator extends HTMLElement {
             element[scrollProp] + delta))
     }
     snap(vx, vy) {
+        if (!this.#scrollBounds) return
         const velocity = this.#vertical ? vy : vx
         const [offset, a, b] = this.#scrollBounds
         const { start, end, pages, size } = this
@@ -868,45 +887,103 @@ export class Paginator extends HTMLElement {
     }
     #onTouchStart(e) {
         const touch = e.changedTouches[0]
+        if (!touch) return
         this.#touchState = {
             x: touch?.screenX, y: touch?.screenY,
             t: e.timeStamp,
-            vx: 0, xy: 0,
+            vx: 0, vy: 0,
+            boundaryDir: null,
+            boundaryOverscroll: 0,
         }
+    }
+    #resetBoundaryTouch() {
+        if (!this.#touchState) return
+        this.#touchState.boundaryDir = null
+        this.#touchState.boundaryOverscroll = 0
+    }
+    #onScrolledTouchMove(dx, dy) {
+        const state = this.#touchState
+        const delta = this.#getScrollDelta(dx, dy)
+        if (!state || !Number.isFinite(delta) || !delta) return
+
+        const max = Math.max(0, this.viewSize - this.size)
+        const rawStart = this.#container[this.scrollProp]
+        const bouncedBeforeStart = this.#vertical ? rawStart > 0 : rawStart < 0
+        const atStart = this.start <= 1 || bouncedBeforeStart
+        const dir = delta < 0 && atStart
+            ? -1
+            : delta > 0 && max - this.start <= 1
+                ? 1
+                : null
+
+        if (!dir || this.#adjacentIndex(dir) == null) {
+            this.#resetBoundaryTouch()
+            return
+        }
+
+        if (state.boundaryDir !== dir) {
+            state.boundaryDir = dir
+            state.boundaryOverscroll = 0
+        }
+
+        state.boundaryOverscroll += Math.abs(delta)
+        if (state.boundaryOverscroll < SCROLLED_BOUNDARY_OVERSCROLL) return
+
+        const overflow = dir
+            * (state.boundaryOverscroll - SCROLLED_BOUNDARY_OVERSCROLL)
+        this.#resetBoundaryTouch()
+        this.#continueBoundaryScroll(dir, overflow)
     }
     #onTouchMove(e) {
         const state = this.#touchState
-        if (state.pinched) return
-        state.pinched = globalThis.visualViewport.scale > 1
-        if (this.scrolled || state.pinched) return
-        if (e.touches.length > 1) {
-            if (this.#touchScrolled) e.preventDefault()
-            return
-        }
-        e.preventDefault()
+        if (!state) return
         const touch = e.changedTouches[0]
+        if (!touch) return
         const x = touch.screenX, y = touch.screenY
         const dx = state.x - x, dy = state.y - y
-        const dt = e.timeStamp - state.t
+        const dt = Math.max(1, e.timeStamp - state.t)
         state.x = x
         state.y = y
         state.t = e.timeStamp
         state.vx = dx / dt
         state.vy = dy / dt
+
+        state.pinched ||= (globalThis.visualViewport?.scale ?? 1) > 1
+        if (state.pinched) return
+        if (e.touches.length > 1) {
+            if (this.#touchScrolled) e.preventDefault()
+            return
+        }
+        if (this.scrolled) {
+            this.#onScrolledTouchMove(dx, dy)
+            return
+        }
+        e.preventDefault()
         this.#touchScrolled = true
         this.scrollBy(dx, dy)
     }
     #onTouchEnd() {
         this.#touchScrolled = false
-        if (this.scrolled) return
+        if (this.scrolled) {
+            this.#touchState = null
+            return
+        }
+        if (!this.#touchState) return
+
+        const { vx, vy } = this.#touchState
+        this.#touchState = null
 
         // XXX: Firefox seems to report scale as 1... sometimes...?
         // at this point I'm basically throwing `requestAnimationFrame` at
         // anything that doesn't work
         requestAnimationFrame(() => {
-            if (globalThis.visualViewport.scale === 1)
-                this.snap(this.#touchState.vx, this.#touchState.vy)
+            if ((globalThis.visualViewport?.scale ?? 1) === 1)
+                this.snap(vx, vy)
         })
+    }
+    #onTouchCancel() {
+        this.#touchScrolled = false
+        this.#touchState = null
     }
     // allows one to process rects as if they were LTR and horizontal
     #getRectMapper() {
@@ -1165,7 +1242,7 @@ export class Paginator extends HTMLElement {
         this.#view.document.defaultView.focus()
     }
     destroy() {
-        this.#observer.unobserve(this)
+        this.#observer.unobserve(this.#container)
         this.#view.destroy()
         this.#view = null
         this.sections[this.#index]?.unload?.()
