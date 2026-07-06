@@ -209,7 +209,9 @@ const setStylesImportant = (el, styles) => {
 }
 
 class View {
-    #observer = new ResizeObserver(() => this.expand())
+    #observer = new ResizeObserver(() => {
+        if (!this.#destroyed) this.expand()
+    })
     #element = document.createElement('div')
     #iframe = document.createElement('iframe')
     #contentRange = document.createRange()
@@ -219,6 +221,7 @@ class View {
     #column = true
     #size
     #layout = {}
+    #destroyed = false
     constructor({ container, onExpand }) {
         this.container = container
         this.onExpand = onExpand
@@ -255,7 +258,15 @@ class View {
         if (typeof src !== 'string') throw new Error(`${src} is not string`)
         return new Promise(resolve => {
             this.#iframe.addEventListener('load', () => {
+                if (this.#destroyed) {
+                    resolve()
+                    return
+                }
                 const doc = this.document
+                if (!doc?.documentElement || !doc.body) {
+                    resolve()
+                    return
+                }
                 afterLoad?.(doc)
 
                 // it needs to be visible for Firefox to get computed style
@@ -276,7 +287,9 @@ class View {
                 // the resize observer above doesn't work in Firefox
                 // (see https://bugzilla.mozilla.org/show_bug.cgi?id=1832939)
                 // until the bug is fixed we can at least account for font load
-                doc.fonts.ready.then(() => this.expand())
+                doc.fonts.ready.then(() => {
+                    if (!this.#destroyed) this.expand()
+                })
 
                 resolve()
             }, { once: true })
@@ -293,6 +306,7 @@ class View {
     scrolled({ gap, columnWidth }) {
         const vertical = this.#vertical
         const doc = this.document
+        if (!doc?.documentElement || !doc.body) return
         setStylesImportant(doc.documentElement, {
             'box-sizing': 'border-box',
             'padding': vertical ? `${gap}px 0` : `0 ${gap}px`,
@@ -312,6 +326,7 @@ class View {
         this.#size = vertical ? height : width
 
         const doc = this.document
+        if (!doc?.documentElement || !doc.body) return
         setStylesImportant(doc.documentElement, {
             'box-sizing': 'border-box',
             'column-width': `${Math.trunc(columnWidth)}px`,
@@ -343,6 +358,7 @@ class View {
         const { width, height, margin } = this.#layout
         const vertical = this.#vertical
         const doc = this.document
+        if (!doc?.body) return
         for (const el of doc.body.querySelectorAll('img, svg, video')) {
             // preserve max size if they are already set
             const { maxHeight, maxWidth } = doc.defaultView.getComputedStyle(el)
@@ -361,7 +377,9 @@ class View {
         }
     }
     expand() {
-        const { documentElement } = this.document
+        if (this.#destroyed) return
+        const { documentElement } = this.document ?? {}
+        if (!documentElement) return
         if (this.#column) {
             const side = this.#vertical ? 'height' : 'width'
             const otherSide = this.#vertical ? 'width' : 'height'
@@ -417,7 +435,8 @@ class View {
         return this.#overlayer
     }
     destroy() {
-        if (this.document) this.#observer.unobserve(this.document.body)
+        this.#destroyed = true
+        if (this.document?.body) this.#observer.unobserve(this.document.body)
     }
 }
 
@@ -1232,11 +1251,16 @@ export class Paginator extends HTMLElement {
         } else $style.textContent = styles
 
         // NOTE: needs `requestAnimationFrame` in Chromium
-        requestAnimationFrame(() =>
-            this.#background.style.background = getBackground(this.#view.document))
+        requestAnimationFrame(() => {
+            const doc = this.#view?.document
+            if (doc?.documentElement && doc.body) {
+                this.#background.style.background = getBackground(doc)
+            }
+        })
 
         // needed because the resize observer doesn't work in Firefox
-        this.#view?.document?.fonts?.ready?.then(() => this.#view.expand())
+        const view = this.#view
+        view?.document?.fonts?.ready?.then(() => view.expand())
     }
     focusView() {
         this.#view.document.defaultView.focus()
