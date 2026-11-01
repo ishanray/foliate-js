@@ -989,9 +989,20 @@ export class Paginator extends HTMLElement {
             this.#onScrolledTouchMove(dx, dy)
             return
         }
+        // With text selected, a drag extends the selection (after a long
+        // press, or on a selection handle) instead of turning the page.
+        if (this.#hasTextSelection()) {
+            state.vx = 0
+            state.vy = 0
+            return
+        }
         e.preventDefault()
         this.#touchScrolled = true
         this.scrollBy(dx, dy)
+    }
+    #hasTextSelection() {
+        const sel = this.#view?.document?.getSelection?.()
+        return !!sel && sel.rangeCount > 0 && !sel.isCollapsed
     }
     #onTouchEnd() {
         this.#touchScrolled = false

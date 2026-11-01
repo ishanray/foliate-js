@@ -787,8 +787,26 @@ class Loader {
         if (isExternal(href)) return href
         const path = resolveURL(href, base)
         const item = this.manifest.find(item => item.href === path)
+            ?? this.#findMisresolvedItem(href)
         if (!item) return href
         return this.loadItem(item, parents.concat(base))
+    }
+    // Some books write resource paths relative to the package folder instead
+    // of the referring file (e.g. `Images/cover.jpg` from `Text/title.xhtml`).
+    // When the exact path is missing, accept a single manifest item whose path
+    // ends with the given one.
+    #findMisresolvedItem(href) {
+        if (!href || href.startsWith('#') || href.startsWith('/')) return null
+        let tail
+        try {
+            tail = decodeURI(href.split('#')[0]).replace(/^(\.\.?\/)+/, '')
+        } catch {
+            return null
+        }
+        if (!tail) return null
+        const matches = this.manifest.filter(item =>
+            item.href === tail || item.href.endsWith('/' + tail))
+        return matches.length === 1 ? matches[0] : null
     }
     async loadReplaced(item, parents = []) {
         const { href, mediaType } = item
@@ -836,6 +854,16 @@ class Loader {
                     child = child.nextSibling
                 }
             }
+            // SVG attribute names are case-sensitive in XHTML; books that went
+            // through an HTML serializer can have `viewbox` instead of
+            // `viewBox`, which leaves covers unscaled and cropped
+            for (const svg of doc.querySelectorAll('svg')) {
+                for (const name of ['viewBox', 'preserveAspectRatio']) {
+                    const lower = name.toLowerCase()
+                    if (!svg.hasAttribute(name) && svg.hasAttribute(lower))
+                        svg.setAttribute(name, svg.getAttribute(lower))
+                }
+            }
             // replace hrefs (excluding anchors)
             const replace = async (el, attr) => el.setAttribute(attr,
                 await this.loadHref(el.getAttribute(attr), href, parents))
@@ -843,6 +871,9 @@ class Loader {
             for (const el of doc.querySelectorAll('[src]')) await replace(el, 'src')
             for (const el of doc.querySelectorAll('[poster]')) await replace(el, 'poster')
             for (const el of doc.querySelectorAll('object[data]')) await replace(el, 'data')
+            // SVG 2 uses a plain `href` on <image>; links (<a href>) stay as-is
+            for (const el of doc.querySelectorAll('image[href]'))
+                await replace(el, 'href')
             for (const el of doc.querySelectorAll('[*|href]:not([href])'))
                 el.setAttributeNS(NS.XLINK, 'href', await this.loadHref(
                     el.getAttributeNS(NS.XLINK, 'href'), href, parents))
