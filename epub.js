@@ -322,7 +322,7 @@ const parseNav = (doc, resolve = f => f) => {
         const label = getElementText($a) || $a?.getAttribute('title')
         // TODO: get and concat alt/title texts in content
         const result = { label, href, subitems: parseOL($ol) }
-        if (getType) result.type = $a?.getAttributeNS(NS.EPUB, 'type')?.split(/\s/)
+        if (getType) result.type = $a?.getAttributeNS(NS.EPUB, 'type')?.split(/\s/) ?? []
         return result
     }
     const parseOL = ($ol, getType) => $ol ? $$($ol, 'li').map(parseLI(getType)) : null
@@ -662,7 +662,7 @@ class Resources {
             .map(getAttributes('type', 'title', 'href'))
             .map(({ type, title, href }) => ({
                 label: title,
-                type: type.split(/\s/),
+                type: type?.split(/\s/) ?? [],
                 href: resolveHref(href),
             }))
 
