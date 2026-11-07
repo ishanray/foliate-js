@@ -276,7 +276,7 @@ export class View extends HTMLElement {
                 this.renderer.goTo(resolved)
                     .then(() => {
                         const { doc } = this.renderer.getContents()
-                            .find(x => x.index = resolved.index)
+                            .find(x => x.index === resolved.index)
                         const el = resolved.anchor(doc)
                         el.classList.add(activeClass)
                         if (playbackActiveClass) el.ownerDocument
@@ -308,7 +308,7 @@ export class View extends HTMLElement {
     }
     goToTextStart() {
         return this.goTo(this.book.landmarks
-            ?.find(m => m.type.includes('bodymatter') || m.type.includes('text'))
+            ?.find(m => m.type?.includes('bodymatter') || m.type?.includes('text'))
             ?.href ?? this.book.sections.findIndex(s => s.linear !== 'no'))
     }
     async init({ lastLocation, showTextStart }) {
@@ -357,7 +357,7 @@ export class View extends HTMLElement {
             const href_ = a.getAttribute('href')
             const href = section?.resolveHref?.(href_) ?? href_
             if (book?.isExternal?.(href))
-                Promise.resolve(this.#emit('external-link', { a, href_ }, true))
+                Promise.resolve(this.#emit('external-link', { a, href: href_ }, true))
                     .then(x => x ? globalThis.open(href_, '_blank') : null)
                     .catch(e => console.error(e))
             else Promise.resolve(this.#emit('link', { a, href }, true))
